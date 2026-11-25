@@ -1,0 +1,120 @@
+# From MANTRA_MANIFEST/workflows/mac-swift.yml (adapted: a C AudioServerPlugIn instead of a Swift .app; APP and
+# VERSION_FILE changed as its README says; build.sh signs ${SIGN} = "-" ad hoc). Three jobs:
+#   build    compile the universal driver, the icon, the unit test with a fake HAL host, the release zip
+#   haltest  install it on the runner's OWN macOS 15 (never on Marko's Mac) next to BlackHole 2ch, restart
+#            coreaudiod, probe both devices, loop audio Feed -> Mic, test the aggregate fallback, uninstall
+#   release  vN marked Latest, only when both passed
+name: build
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+permissions:
+  contents: write
+env:
+  APP: "Mantra VirtualCam"
+  VERSION_FILE: MANTRA_VERSION
+jobs:
+  build:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Icon
+        run: swift icon/make_icon.swift
+      - name: Build
+        run: SIGN=- ./build.sh
+      - name: Unit test (fake HAL host)
+        run: |
+          clang -O0 -g -Wno-unused-function -framework CoreAudio -framework CoreFoundation -framework Accelerate \
+            tests/driver_test.c -o build/driver_test
+          ./build/driver_test
+      - name: Static checks
+        run: |
+          D="build/$APP.driver"
+          codesign -dvv "$D" 2>&1
+          lipo -info "$D/Contents/MacOS/$APP"
+          otool -L "$D/Contents/MacOS/$APP"
+          plutil -p "$D/Contents/Info.plist"
+          nm -gU "$D/Contents/MacOS/$APP" | grep -q _MantraVirtualCam_Create
+          ! nm -gU "$D/Contents/MacOS/$APP" | grep -q _BlackHole_Create
+          /usr/libexec/PlistBuddy -c "Print :CFPlugInFactories" "$D/Contents/Info.plist" | grep -q 35D75853-9B41-482B-8A1A-FEB55C9ECAFE
+          ! grep -a -q e395c745-4eea-4d94-bb92-46224221047c "$D/Contents/Info.plist"
+      - name: Pack
+        run: |
+          V=$(tr -d '[:space:]' < "$VERSION_FILE")
+          P=build/pack/MantraVirtualCam
+          mkdir -p "$P/tools"
+          ditto "build/$APP.driver" "$P/$APP.driver"
+          cp install.sh uninstall.sh LICENSE "$P/"
+          cp tools/coreaudio.py tools/vcam_probe.py tools/fallback_aggregate.py "$P/tools/"
+          printf 'Mantra VirtualCam driver v%s, GPL-3.0, a fork of BlackHole by Existential Audio Inc.\nSource: https://github.com/%s/tree/%s\nUpstream: https://github.com/ExistentialAudio/BlackHole\n' \
+            "$V" "$GITHUB_REPOSITORY" "$GITHUB_SHA" > "$P/SOURCE.txt"
+          (cd build/pack && ditto -c -k --keepParent MantraVirtualCam ../MantraVirtualCam.zip)
+          unzip -l build/MantraVirtualCam.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: driver
+          path: build/MantraVirtualCam.zip
+
+  haltest:
+    needs: build
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver
+      - name: Runner facts
+        run: sw_vers; uname -m; csrutil status || true; ls -la /Library/Audio/Plug-Ins/HAL || true
+      - name: BlackHole 2ch first (the coexistence check)
+        run: |
+          brew install --cask blackhole-2ch
+          sudo launchctl kickstart -k system/com.apple.audio.coreaudiod || sudo killall coreaudiod
+          sleep 5
+      - name: Install Mantra VirtualCam (runner only)
+        run: |
+          ditto -x -k MantraVirtualCam.zip unz
+          ./unz/MantraVirtualCam/install.sh --yes
+      - name: Probe (structure, names, hidden twin, latency, status property)
+        run: |
+          python3 -I tools/vcam_probe.py --json
+          python3 -I tools/vcam_probe.py --json | python3 -I -c 'import json,sys; r=json.load(sys.stdin); assert r["blackhole2chPresent"], "BlackHole 2ch vanished"; assert not r["problems"], r["problems"]; print("coexists with BlackHole 2ch, no problems")'
+          system_profiler SPAudioDataType | grep -B1 -A12 -E "Mantra VirtualCam|BlackHole" || true
+      - name: Loopback Feed -> Mic (sample-time exact)
+        continue-on-error: true
+        run: python3 -I tools/vcam_probe.py --loopback 3
+      - name: coreaudiod log
+        if: always()
+        run: |
+          log show --last 10m --style compact --predicate 'process == "coreaudiod" OR process CONTAINS "Core Audio Driver" OR eventMessage CONTAINS[c] "mantra"' 2>/dev/null \
+            | grep -i -E "mantra|virtualcam|signature|code ?sign|not valid|reject|denied|plug-?in" | tail -60 || true
+      - name: Uninstall, then the aggregate fallback (create, check, remove)
+        run: |
+          ./unz/MantraVirtualCam/uninstall.sh --yes
+          python3 -I tools/fallback_aggregate.py status
+          python3 -I tools/fallback_aggregate.py create
+          sleep 1
+          python3 -I tools/fallback_aggregate.py status | tee agg.txt
+          grep -q "exists" agg.txt
+          python3 -I tools/fallback_aggregate.py remove
+          python3 -I tools/fallback_aggregate.py status | grep -q "aggregate MantraVirtualCamAggregate_UID: none"
+
+  release:
+    needs: [build, haltest]
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: driver
+      - name: Release (Latest)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(tr -d '[:space:]' < "$VERSION_FILE")
+          NOTES="$(git log -1 --format=%s)
+
+          Mantra VirtualCam audio driver v$V (GPL-3.0, fork of BlackHole by Existential Audio Inc.; source: https://github.com/$GITHUB_REPOSITORY/tree/$GITHUB_SHA).
+          Install (admin password typed by Marko himself, Core Audio restarts for about 2 s, never during a lesson): unzip, then ./MantraVirtualCam/install.sh. Remove: ./MantraVirtualCam/uninstall.sh."
+          if gh release view "v$V" >/dev/null 2>&1; then gh release upload "v$V" MantraVirtualCam.zip --clobber
+          else gh release create "v$V" MantraVirtualCam.zip --target "$GITHUB_SHA" --latest --title "$APP v$V" --notes "$NOTES"; fi

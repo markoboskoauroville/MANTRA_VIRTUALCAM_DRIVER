@@ -1,3 +1,7 @@
 xcuserdata/
 .DS_Store
 *.pkg
+build/
+icon/*.iconset/
+icon/MantraVirtualCam.icns
+__pycache__/

@@ -149,6 +149,100 @@ struct ObjectInfo {
 //    Note also that we share a single mutex across all objects to be thread safe for the same reason.
 
 
+//==================================================================================================
+//    Mantra VirtualCam configuration (fork of BlackHole 0.7.1, GPL-3, see TAKEOVER.md)
+//
+//    Device  (id 3)  "Mantra VirtualCam"       visible, INPUT only: the microphone Zoom/FaceTime/OBS pick.
+//    Device2 (id 12) "Mantra VirtualCam Feed"  hidden,  OUTPUT only: the Webcam Recorder writes into it.
+//    Both share BlackHole's one ring buffer and one host-clock time line, so a sample written to the Feed
+//    at output sample time S is read by the microphone at input sample time S (same host time).
+//    Every value stays overridable with GCC_PREPROCESSOR_DEFINITIONS, exactly as upstream.
+//==================================================================================================
+#ifndef kDriver_Name
+#define                             kDriver_Name                        "Mantra VirtualCam"
+#endif
+#ifndef kPlugIn_BundleID
+#define                             kPlugIn_BundleID                    "community.auroville.mantra.virtualcam.driver"
+#endif
+#ifndef kPlugIn_Icon
+#define                             kPlugIn_Icon                        "MantraVirtualCam.icns"
+#endif
+#ifndef kHas_Driver_Name_Format
+#define                             kHas_Driver_Name_Format             false
+#endif
+#ifndef kBox_UID
+#define                             kBox_UID                            "MantraVirtualCam_Box_UID"
+#endif
+#ifndef kDevice_UID
+#define                             kDevice_UID                         "MantraVirtualCam_UID"
+#endif
+#ifndef kDevice2_UID
+#define                             kDevice2_UID                        "MantraVirtualCamFeed_UID"
+#endif
+#ifndef kDevice_ModelUID
+#define                             kDevice_ModelUID                    "MantraVirtualCam_ModelUID"
+#endif
+#ifndef kDevice_Name
+#define                             kDevice_Name                        "Mantra VirtualCam"
+#endif
+#ifndef kDevice2_Name
+#define                             kDevice2_Name                       "Mantra VirtualCam Feed"
+#endif
+#ifndef kBox_Name
+#define                             kBox_Name                           "Mantra VirtualCam Box"
+#endif
+#ifndef kDevice_IsHidden
+#define                             kDevice_IsHidden                    false
+#endif
+#ifndef kDevice2_IsHidden
+#define                             kDevice2_IsHidden                   true
+#endif
+#ifndef kDevice_HasInput
+#define                             kDevice_HasInput                    true
+#endif
+#ifndef kDevice_HasOutput
+#define                             kDevice_HasOutput                   false
+#endif
+#ifndef kDevice2_HasInput
+#define                             kDevice2_HasInput                   false
+#endif
+#ifndef kDevice2_HasOutput
+#define                             kDevice2_HasOutput                  true
+#endif
+#ifndef kManufacturer_Name
+#define                             kManufacturer_Name                  "Mantra (fork of BlackHole by Existential Audio)"
+#endif
+#ifndef kLatency_Frame_Size
+#define                             kLatency_Frame_Size                 0
+#endif
+#ifndef kNumber_Of_Channels
+#define                             kNumber_Of_Channels                 2
+#endif
+//  The volume control of the microphone stays visible (apps expect one) but does not scale the samples:
+//  Zoom's "Automatically adjust microphone volume" can then never change the drum level.
+#ifndef kEnableVolumeControl
+#define                             kEnableVolumeControl                false
+#endif
+//  Never the default device: nothing on the Mac starts using it by itself.
+#ifndef kCanBeDefaultDevice
+#define                             kCanBeDefaultDevice                 false
+#endif
+#ifndef kCanBeDefaultSystemDevice
+#define                             kCanBeDefaultSystemDevice           false
+#endif
+#ifndef kSampleRates
+#define                             kSampleRates                        44100, 48000, 96000
+#endif
+//  The status property (custom, read only, CFDictionary), see TAKEOVER.md "The status property".
+#ifndef kMantra_StatusSelector
+#define                             kMantra_StatusSelector              'mvst'
+#endif
+#ifndef kMantra_StatusVersion
+#define                             kMantra_StatusVersion               1
+#endif
+//==================================================================================================
+
+
 #ifndef kDriver_Name
 #define                             kDriver_Name                        "BlackHole"
 #endif
@@ -183,10 +277,19 @@ struct ObjectInfo {
 
 
 #else
+// Mantra VirtualCam: these four are guarded so the configuration block above can name them.
+#ifndef kBox_UID
 #define                             kBox_UID                            kDriver_Name "_UID"
+#endif
+#ifndef kDevice_UID
 #define                             kDevice_UID                         kDriver_Name "_UID"
+#endif
+#ifndef kDevice2_UID
 #define                             kDevice2_UID                        kDriver_Name "_2_UID"
+#endif
+#ifndef kDevice_ModelUID
 #define                             kDevice_ModelUID                    kDriver_Name "_ModelUID"
+#endif
 
 
 #ifndef kDevice_Name
@@ -339,6 +442,19 @@ static const UInt32                 kDevice_SampleRatesSize             = sizeof
 #define                             kRing_Buffer_Frame_Size             ((65536 + kLatency_Frame_Size))
 static Float32*                     gRingBuffer = NULL;
 
+//  Mantra VirtualCam: counters for the status property. Written only on the IO thread (plain aligned
+//  64-bit stores, atomic on arm64 and x86_64), read by the status property; no locks on the IO path.
+static volatile Float64             gMantra_LastWriteEndSampleTime      = 0;   // Feed: end of the last WriteMix
+static volatile UInt64              gMantra_LastWriteHostTime           = 0;   // mach_absolute_time at that write
+static volatile Float64             gMantra_LastReadEndSampleTime       = 0;   // Mic: end of the last ReadInput
+static volatile UInt64              gMantra_LastReadHostTime            = 0;
+static volatile UInt64              gMantra_WriteCycles                 = 0;
+static volatile UInt64              gMantra_ReadCycles                  = 0;
+static volatile UInt64              gMantra_SilentReads                 = 0;   // reads with no fresh Feed data (underrun / no writer)
+static volatile UInt64              gMantra_Overloads                   = 0;   // WriteMix past its deadline
+static volatile UInt32              gMantra_LastWriteFrames             = 0;
+static volatile UInt32              gMantra_LastReadFrames              = 0;
+
 
 //==================================================================================================
 #pragma mark -
@@ -348,7 +464,7 @@ static Float32*                     gRingBuffer = NULL;
 #pragma mark Prototypes
 
 //    Entry points for the COM methods
-void*                BlackHole_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID);
+void*                MantraVirtualCam_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID);
 static HRESULT        BlackHole_QueryInterface(void* inDriver, REFIID inUUID, LPVOID* outInterface);
 static ULONG        BlackHole_AddRef(void* inDriver);
 static ULONG        BlackHole_Release(void* inDriver);
@@ -451,6 +567,78 @@ static CFStringRef get_device_name(void)      { RETURN_FORMATTED_STRING(kDevice_
 static CFStringRef get_device2_uid(void)      { RETURN_FORMATTED_STRING(kDevice2_UID) }
 static CFStringRef get_device2_name(void)     { RETURN_FORMATTED_STRING(kDevice2_Name) }
 static CFStringRef get_device_model_uid(void) { RETURN_FORMATTED_STRING(kDevice_ModelUID) }
+
+// Mantra VirtualCam: the status dictionary (custom property 'mvst', see TAKEOVER.md)
+
+static void mantra_put_num(CFMutableDictionaryRef d, const char* key, CFNumberType type, const void* value)
+{
+	CFStringRef k = CFStringCreateWithCString(NULL, key, kCFStringEncodingUTF8);
+	CFNumberRef n = CFNumberCreate(NULL, type, value);
+	if (k != NULL && n != NULL) { CFDictionarySetValue(d, k, n); }
+	if (k != NULL) { CFRelease(k); }
+	if (n != NULL) { CFRelease(n); }
+}
+
+static CFPropertyListRef mantra_copy_status(void)
+{
+	CFMutableDictionaryRef d = CFDictionaryCreateMutable(NULL, 0, &kCFTypeDictionaryKeyCallBacks, &kCFTypeDictionaryValueCallBacks);
+	if (d == NULL) { return NULL; }
+
+	SInt32  version         = kMantra_StatusVersion;
+	Float64 sampleRate      = gDevice_SampleRate;
+	Float64 nominalTicks    = gDevice_HostTicksPerFrame;
+	Float64 effectiveTicks  = (gClockSource_Value > 0) ? gDevice_AdjustedTicksPerFrame : gDevice_HostTicksPerFrame;
+	Float64 clockRatio      = (effectiveTicks > 0) ? nominalTicks / effectiveTicks : 1.0;   // >1 = device clock runs fast vs host
+	SInt64  anchorHost      = (SInt64)gDevice_AnchorHostTime;
+	SInt64  zeroCount       = (SInt64)gDevice_NumberTimeStamps;
+	SInt32  zeroPeriod      = kDevice_RingBufferSize;
+	SInt32  ringFrames      = kRing_Buffer_Frame_Size;
+	SInt32  latencyFrames   = 0;                      // kAudioDevicePropertyLatency (loopback in the same IO cycle)
+	SInt32  safetyFrames    = kLatency_Frame_Size;    // kAudioDevicePropertySafetyOffset
+	SInt64  micRunning      = (SInt64)gDevice_IOIsRunning;
+	SInt64  feedRunning     = (SInt64)gDevice2_IOIsRunning;
+	Float64 wEnd            = gMantra_LastWriteEndSampleTime;
+	Float64 rEnd            = gMantra_LastReadEndSampleTime;
+	SInt64  wHost           = (SInt64)gMantra_LastWriteHostTime;
+	SInt64  rHost           = (SInt64)gMantra_LastReadHostTime;
+	SInt64  wCycles         = (SInt64)gMantra_WriteCycles;
+	SInt64  rCycles         = (SInt64)gMantra_ReadCycles;
+	SInt64  silent          = (SInt64)gMantra_SilentReads;
+	SInt64  overloads       = (SInt64)gMantra_Overloads;
+	SInt32  wFrames         = (SInt32)gMantra_LastWriteFrames;
+	SInt32  rFrames         = (SInt32)gMantra_LastReadFrames;
+	Float64 fillFrames      = (gDevice_IOIsRunning && gDevice2_IOIsRunning) ? (wEnd - rEnd) : 0;  // Feed ahead of Mic
+	Float64 fillMs          = (sampleRate > 0) ? fillFrames * 1000.0 / sampleRate : 0;
+	SInt64  nowHost         = (SInt64)mach_absolute_time();
+
+	mantra_put_num(d, "version",            kCFNumberSInt32Type,  &version);
+	mantra_put_num(d, "sampleRate",         kCFNumberFloat64Type, &sampleRate);
+	mantra_put_num(d, "hostTicksPerFrame",  kCFNumberFloat64Type, &nominalTicks);
+	mantra_put_num(d, "clockTicksPerFrame", kCFNumberFloat64Type, &effectiveTicks);
+	mantra_put_num(d, "clockRatio",         kCFNumberFloat64Type, &clockRatio);
+	mantra_put_num(d, "anchorHostTime",     kCFNumberSInt64Type,  &anchorHost);
+	mantra_put_num(d, "zeroTimeStampCount", kCFNumberSInt64Type,  &zeroCount);
+	mantra_put_num(d, "zeroTimeStampPeriod",kCFNumberSInt32Type,  &zeroPeriod);
+	mantra_put_num(d, "ringFrames",         kCFNumberSInt32Type,  &ringFrames);
+	mantra_put_num(d, "latencyFrames",      kCFNumberSInt32Type,  &latencyFrames);
+	mantra_put_num(d, "safetyOffsetFrames", kCFNumberSInt32Type,  &safetyFrames);
+	mantra_put_num(d, "micClients",         kCFNumberSInt64Type,  &micRunning);
+	mantra_put_num(d, "feedClients",        kCFNumberSInt64Type,  &feedRunning);
+	mantra_put_num(d, "lastWriteEndSampleTime", kCFNumberFloat64Type, &wEnd);
+	mantra_put_num(d, "lastReadEndSampleTime",  kCFNumberFloat64Type, &rEnd);
+	mantra_put_num(d, "lastWriteHostTime",  kCFNumberSInt64Type,  &wHost);
+	mantra_put_num(d, "lastReadHostTime",   kCFNumberSInt64Type,  &rHost);
+	mantra_put_num(d, "lastWriteFrames",    kCFNumberSInt32Type,  &wFrames);
+	mantra_put_num(d, "lastReadFrames",     kCFNumberSInt32Type,  &rFrames);
+	mantra_put_num(d, "writeCycles",        kCFNumberSInt64Type,  &wCycles);
+	mantra_put_num(d, "readCycles",         kCFNumberSInt64Type,  &rCycles);
+	mantra_put_num(d, "silentReads",        kCFNumberSInt64Type,  &silent);
+	mantra_put_num(d, "overloads",          kCFNumberSInt64Type,  &overloads);
+	mantra_put_num(d, "fillFrames",         kCFNumberFloat64Type, &fillFrames);
+	mantra_put_num(d, "fillMs",             kCFNumberFloat64Type, &fillMs);
+	mantra_put_num(d, "nowHostTime",        kCFNumberSInt64Type,  &nowHost);
+	return d;
+}
 
 // Volume conversions
 
@@ -614,7 +802,7 @@ static bool is_valid_sample_rate(Float64 sample_rate)
 
 #pragma mark Factory
 
-void*	BlackHole_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID)
+void*	MantraVirtualCam_Create(CFAllocatorRef inAllocator, CFUUIDRef inRequestedTypeUUID)
 {
 	//	This is the CFPlugIn factory function. Its job is to create the implementation for the given
 	//	type provided that the type is supported. Because this driver is simple and all its
@@ -780,7 +968,7 @@ static OSStatus	BlackHole_Initialize(AudioServerPlugInDriverRef inDriver, AudioS
 	//	set the box name directly as a last resort
 	if(gBox_Name == NULL)
 	{
-		gBox_Name = CFSTR("BlackHole Box");
+		gBox_Name = CFSTR(kBox_Name);
 	}
 	
 	//	calculate the host ticks per frame
@@ -1503,7 +1691,8 @@ static OSStatus	BlackHole_GetPlugInPropertyData(AudioServerPlugInDriverRef inDri
 			//	qualifier doesn't match any devices. In such case, kAudioObjectUnknown is
 			//	the object ID to return.
 			FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: not enough space for the return value of kAudioPlugInPropertyTranslateUIDToBox");
-			FailWithAction(inQualifierDataSize == sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: the qualifier is the wrong size for kAudioPlugInPropertyTranslateUIDToBox");
+			// Mantra VirtualCam: upstream tested "==" here, which refused every correct qualifier.
+			FailWithAction(inQualifierDataSize != sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: the qualifier is the wrong size for kAudioPlugInPropertyTranslateUIDToBox");
 			FailWithAction(inQualifierData == NULL, theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: no qualifier for kAudioPlugInPropertyTranslateUIDToBox");
 
 			CFStringRef boxUID = get_box_uid();
@@ -1567,7 +1756,8 @@ static OSStatus	BlackHole_GetPlugInPropertyData(AudioServerPlugInDriverRef inDri
 			//	qualifier doesn't match any devices. In such case, kAudioObjectUnknown is
 			//	the object ID to return.
 			FailWithAction(inDataSize < sizeof(AudioObjectID), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: not enough space for the return value of kAudioPlugInPropertyTranslateUIDToDevice");
-			FailWithAction(inQualifierDataSize == sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: the qualifier is the wrong size for kAudioPlugInPropertyTranslateUIDToDevice");
+			// Mantra VirtualCam: upstream tested "==" here, which refused every correct qualifier.
+			FailWithAction(inQualifierDataSize != sizeof(CFStringRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: the qualifier is the wrong size for kAudioPlugInPropertyTranslateUIDToDevice");
 			FailWithAction(inQualifierData == NULL, theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetPlugInPropertyData: no qualifier for kAudioPlugInPropertyTranslateUIDToDevice");
             
             
@@ -2200,6 +2390,8 @@ static Boolean	BlackHole_HasDeviceProperty(AudioServerPlugInDriverRef inDriver, 
 		case kAudioDevicePropertyZeroTimeStampPeriod:
 		case kAudioDevicePropertyIcon:
 		case kAudioDevicePropertyStreams:
+		case kAudioObjectPropertyCustomPropertyInfoList:	// Mantra VirtualCam
+		case kMantra_StatusSelector:						// Mantra VirtualCam
 			theAnswer = true;
 			break;
 			
@@ -2263,6 +2455,8 @@ static OSStatus	BlackHole_IsDevicePropertySettable(AudioServerPlugInDriverRef in
 		case kAudioDevicePropertyPreferredChannelLayout:
 		case kAudioDevicePropertyZeroTimeStampPeriod:
 		case kAudioDevicePropertyIcon:
+		case kAudioObjectPropertyCustomPropertyInfoList:	// Mantra VirtualCam
+		case kMantra_StatusSelector:						// Mantra VirtualCam
 			*outIsSettable = false;
 			break;
 		
@@ -2401,6 +2595,14 @@ static OSStatus	BlackHole_GetDevicePropertyDataSize(AudioServerPlugInDriverRef i
 
 		case kAudioDevicePropertyIcon:
 			*outDataSize = sizeof(CFURLRef);
+			break;
+
+		case kAudioObjectPropertyCustomPropertyInfoList:	// Mantra VirtualCam
+			*outDataSize = sizeof(AudioServerPlugInCustomPropertyInfo);
+			break;
+
+		case kMantra_StatusSelector:						// Mantra VirtualCam
+			*outDataSize = sizeof(CFPropertyListRef);
 			break;
 
 		default:
@@ -2726,7 +2928,8 @@ static OSStatus	BlackHole_GetDevicePropertyData(AudioServerPlugInDriverRef inDri
                 case kObjectID_Device2:
                     for (UInt32 i = 0, k = 0; k < theNumberItemsToFetch; i++)
                     {
-                        if ((kDevice_ObjectList[i].type == kObjectType_Control) && !(!gPitch_Adjust_Enabled && kDevice_ObjectList[i].id==kObjectID_Pitch_Adjust))
+                        // Mantra VirtualCam: upstream tested kDevice_ObjectList here (wrong list for Device2).
+                        if ((kDevice2_ObjectList[i].type == kObjectType_Control) && !(!gPitch_Adjust_Enabled && kDevice2_ObjectList[i].id==kObjectID_Pitch_Adjust))
                         {
                             ((AudioObjectID*)outData)[k++] = kDevice2_ObjectList[i].id;
                         }
@@ -2849,6 +3052,22 @@ static OSStatus	BlackHole_GetDevicePropertyData(AudioServerPlugInDriverRef inDri
 				*((CFURLRef*)outData) = theURL;
 				*outDataSize = sizeof(CFURLRef);
 			}
+			break;
+
+		case kAudioObjectPropertyCustomPropertyInfoList:	// Mantra VirtualCam
+			//	One custom property: the status dictionary (a CFPropertyList, so the HAL can carry it
+			//	across the process boundary to the app).
+			FailWithAction(inDataSize < sizeof(AudioServerPlugInCustomPropertyInfo), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetDevicePropertyData: not enough space for kAudioObjectPropertyCustomPropertyInfoList");
+			((AudioServerPlugInCustomPropertyInfo*)outData)->mSelector = kMantra_StatusSelector;
+			((AudioServerPlugInCustomPropertyInfo*)outData)->mPropertyDataType = kAudioServerPlugInCustomPropertyDataTypeCFPropertyList;
+			((AudioServerPlugInCustomPropertyInfo*)outData)->mQualifierDataType = kAudioServerPlugInCustomPropertyDataTypeNone;
+			*outDataSize = sizeof(AudioServerPlugInCustomPropertyInfo);
+			break;
+
+		case kMantra_StatusSelector:						// Mantra VirtualCam
+			FailWithAction(inDataSize < sizeof(CFPropertyListRef), theAnswer = kAudioHardwareBadPropertySizeError, Done, "BlackHole_GetDevicePropertyData: not enough space for the Mantra status");
+			*((CFPropertyListRef*)outData) = mantra_copy_status();
+			*outDataSize = sizeof(CFPropertyListRef);
 			break;
 			
 		default:
@@ -4558,8 +4777,13 @@ static OSStatus	BlackHole_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
     if(inOperationID == kAudioServerPlugInIOOperationReadInput)
     {
         // If mute is one let's just fill the buffer with zeros or if there's no apps outputting audio
+        gMantra_ReadCycles += 1;
+        gMantra_LastReadEndSampleTime = inIOCycleInfo->mInputTime.mSampleTime + inIOBufferFrameSize;
+        gMantra_LastReadHostTime = mach_absolute_time();
+        gMantra_LastReadFrames = inIOBufferFrameSize;
         if (gMute_Master_Value || lastOutputSampleTime - inIOBufferFrameSize < inIOCycleInfo->mInputTime.mSampleTime)
         {
+            gMantra_SilentReads += 1;
             // Clear the ioMainBuffer
             vDSP_vclr(ioMainBuffer, 1, inIOBufferFrameSize * kNumber_Of_Channels);
             
@@ -4593,6 +4817,7 @@ static OSStatus	BlackHole_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         if (inIOCycleInfo->mCurrentTime.mSampleTime > inIOCycleInfo->mOutputTime.mSampleTime + inIOBufferFrameSize + kLatency_Frame_Size)
         {
             DebugMsg("BlackHole overload error. kAudioServerPlugInIOOperationWriteMix was unable to complete operation before the deadline. Try increasing the buffer frame size.");
+            gMantra_Overloads += 1;
             return kAudioHardwareUnspecifiedError;
         }
         // TODO: Mix into the buffers but we will need to clear the buffers at some point.
@@ -4605,6 +4830,10 @@ static OSStatus	BlackHole_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         // Save the last output time.
         lastOutputSampleTime = inIOCycleInfo->mOutputTime.mSampleTime + inIOBufferFrameSize;
         isBufferClear = false;
+        gMantra_WriteCycles += 1;
+        gMantra_LastWriteEndSampleTime = lastOutputSampleTime;
+        gMantra_LastWriteHostTime = mach_absolute_time();
+        gMantra_LastWriteFrames = inIOBufferFrameSize;
     }
 
 Done:
