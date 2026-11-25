@@ -22,7 +22,9 @@ jobs:
       - name: Icon
         run: swift icon/make_icon.swift
       - name: Build
-        run: SIGN=- ./build.sh
+        run: |
+          SIGN=- ./build.sh
+          SIGN=- VARIANT=insert KEEP_BUILD=1 ./build.sh
       - name: Unit test (fake HAL host)
         run: |
           clang -O0 -g -Wno-unused-function -framework CoreAudio -framework CoreFoundation -framework Accelerate \
@@ -39,12 +41,18 @@ jobs:
           ! nm -gU "$D/Contents/MacOS/$APP" | grep -q _BlackHole_Create
           /usr/libexec/PlistBuddy -c "Print :CFPlugInFactories" "$D/Contents/Info.plist" | grep -q 35D75853-9B41-482B-8A1A-FEB55C9ECAFE
           ! grep -a -q e395c745-4eea-4d94-bb92-46224221047c "$D/Contents/Info.plist"
+          I="build/Mantra Insert.driver"
+          lipo -info "$I/Contents/MacOS/Mantra Insert"
+          /usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$I/Contents/Info.plist" | grep -q community.auroville.mantra.insert.driver
+          /usr/libexec/PlistBuddy -c "Print :CFPlugInFactories" "$I/Contents/Info.plist" | grep -q 8C1E7A3D-5B2F-4E61-9D47-A2F0C3B6E915
+          strings "$I/Contents/MacOS/Mantra Insert" | grep -q MantraInsertReturn_UID
       - name: Pack
         run: |
           V=$(tr -d '[:space:]' < "$VERSION_FILE")
           P=build/pack/MantraVirtualCam
           mkdir -p "$P/tools"
           ditto "build/$APP.driver" "$P/$APP.driver"
+          ditto "build/Mantra Insert.driver" "$P/Mantra Insert.driver"
           cp install.sh uninstall.sh LICENSE "$P/"
           cp tools/coreaudio.py tools/vcam_probe.py tools/fallback_aggregate.py "$P/tools/"
           printf 'Mantra VirtualCam driver v%s, GPL-3.0, a fork of BlackHole by Existential Audio Inc.\nSource: https://github.com/%s/tree/%s\nUpstream: https://github.com/ExistentialAudio/BlackHole\n' \
@@ -80,6 +88,13 @@ jobs:
           python3 -I tools/vcam_probe.py --json
           python3 -I tools/vcam_probe.py --json | python3 -I -c 'import json,sys; r=json.load(sys.stdin); assert r["blackhole2chPresent"], "BlackHole 2ch vanished"; assert not r["problems"], r["problems"]; print("coexists with BlackHole 2ch, no problems")'
           system_profiler SPAudioDataType | grep -B1 -A12 -E "Mantra VirtualCam|BlackHole" || true
+      - name: Probe the INSERT return pair (v3)
+        run: |
+          python3 -I tools/vcam_probe.py --insert --json
+          python3 -I tools/vcam_probe.py --insert --json | python3 -I -c 'import json,sys; r=json.load(sys.stdin); assert not r["problems"], r["problems"]; print("insert pair OK")'
+      - name: Loopback Insert Return -> Return In (sample-time exact)
+        continue-on-error: true
+        run: python3 -I tools/vcam_probe.py --insert --loopback 3
       - name: Loopback Feed -> Mic (sample-time exact)
         continue-on-error: true
         run: python3 -I tools/vcam_probe.py --loopback 3

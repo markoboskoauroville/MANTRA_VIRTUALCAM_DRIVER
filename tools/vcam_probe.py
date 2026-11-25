@@ -21,9 +21,36 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import coreaudio as ca  # noqa: E402
 
 MIC_UID, FEED_UID = "MantraVirtualCam_UID", "MantraVirtualCamFeed_UID"
+INSERT = "--insert" in sys.argv   # v3: the Mantra Insert pair (visible output "Mantra Insert Return", hidden input twin)
+if INSERT:
+    MIC_UID, FEED_UID = "MantraInsertReturnIn_UID", "MantraInsertReturn_UID"
+
+
+def check_insert():
+    """v3: the insert return pair: the app reads the hidden input twin, another app writes the visible output"""
+    problems, report = [], {}
+    visible = {ca.get_string(d, "uid "): d for d in ca.devices()}
+    mic, feed = ca.device_by_uid(MIC_UID), ca.device_by_uid(FEED_UID)
+    report["blackhole2chPresent"] = "BlackHole2ch_UID" in visible
+    if not feed: problems.append("Mantra Insert Return (output) not found: insert driver not installed or not loaded")
+    if not mic: problems.append("Mantra Insert Return In (hidden input) not found by UID")
+    if feed:
+        f = ca.describe(feed); f["status"] = ca.status(feed); report["feed"] = f
+        if f["name"] != "Mantra Insert Return": problems.append("return name %r" % f["name"])
+        if f["hidden"] or FEED_UID not in visible: problems.append("the return output must be visible")
+        if f["inChannels"] != 0 or f["outChannels"] != 2: problems.append("return must be 0 in / 2 out, is %d/%d" % (f["inChannels"], f["outChannels"]))
+    if mic:
+        m = ca.describe(mic); m["status"] = ca.status(mic); report["mic"] = m
+        if m["name"] != "Mantra Insert Return In": problems.append("return-in name %r" % m["name"])
+        if not m["hidden"] or MIC_UID in visible: problems.append("the return input twin must be hidden")
+        if m["inChannels"] != 2 or m["outChannels"] != 0: problems.append("return-in must be 2 in / 0 out, is %d/%d" % (m["inChannels"], m["outChannels"]))
+    report["problems"] = problems
+    return mic, feed, report
 
 
 def check_devices():
+    if INSERT:
+        return check_insert()
     problems, report = [], {}
     visible = {ca.get_string(d, "uid "): d for d in ca.devices()}
     mic, feed = ca.device_by_uid(MIC_UID), ca.device_by_uid(FEED_UID)

@@ -10,7 +10,7 @@ if [ "$MODE" != "--yes" ]; then
   read -r -p "Core Audio restarts (2 s of silence). Type yes to remove the Mantra VirtualCam driver: " answer
   [ "$answer" = "yes" ] || { echo "Nothing changed."; exit 1; }
 fi
-STEPS="rm -rf '$DST' && (launchctl kickstart -k system/com.apple.audio.coreaudiod || killall coreaudiod)"
+STEPS="rm -rf '$DST' '/Library/Audio/Plug-Ins/HAL/Mantra Insert.driver' && (launchctl kickstart -k system/com.apple.audio.coreaudiod || killall coreaudiod)"
 if [ "$MODE" = "--dialog" ]; then
   osascript -e "do shell script \"$STEPS\" with administrator privileges with prompt \"Remove the Mantra VirtualCam microphone.\""
 else
