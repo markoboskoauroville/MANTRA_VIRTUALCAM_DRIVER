@@ -18,10 +18,10 @@ if [ "$VARIANT" = "insert" ]; then
   NAME="Mantra Insert"
   BUNDLE_ID="community.auroville.mantra.insert.driver"
   FACTORY="8C1E7A3D-5B2F-4E61-9D47-A2F0C3B6E915"
-  DEFS="-DkDriver_Name=\"Mantra Insert\" -DkPlugIn_BundleID=\"$BUNDLE_ID\" -DkBox_UID=\"MantraInsert_Box_UID\"
-        -DkDevice_UID=\"MantraInsertReturn_UID\" -DkDevice2_UID=\"MantraInsertReturnIn_UID\"
-        -DkDevice_ModelUID=\"MantraInsert_ModelUID\" -DkDevice_Name=\"Mantra Insert Return\"
-        -DkDevice2_Name=\"Mantra Insert Return In\" -DkBox_Name=\"Mantra Insert\"
+  DEFS="-DkDriver_Name='\"Mantra Insert\"' -DkPlugIn_BundleID='\"$BUNDLE_ID\"' -DkBox_UID='\"MantraInsert_Box_UID\"'
+        -DkDevice_UID='\"MantraInsertReturn_UID\"' -DkDevice2_UID='\"MantraInsertReturnIn_UID\"'
+        -DkDevice_ModelUID='\"MantraInsert_ModelUID\"' -DkDevice_Name='\"Mantra Insert Return\"'
+        -DkDevice2_Name='\"Mantra Insert Return In\"' -DkBox_Name='\"Mantra Insert\"'
         -DkDevice_IsHidden=false -DkDevice2_IsHidden=true
         -DkDevice_HasInput=false -DkDevice_HasOutput=true -DkDevice2_HasInput=true -DkDevice2_HasOutput=false"
 fi
