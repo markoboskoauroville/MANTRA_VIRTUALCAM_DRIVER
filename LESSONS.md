@@ -11,3 +11,8 @@
 5. (25.11.2026) Never install a HAL driver on Marko's Mac from a session: admin password + a coreaudiod restart
    (2 s of silence everywhere). The GitHub runner is the place to prove a driver loads; Marko installs once himself.
 6. (25.11.2026) Python ctypes is enough to read CoreAudio properties and run IO procs: no compiler on the Mac.
+7. (25.11.2026) v1 on the runner: the ad-hoc build LOADS in macOS 15.8.2 coreaudiod (SIP disabled there), next to
+   BlackHole 2ch; the loopback is sample exact (145920 of 145920 frames). A second run had one writer overload
+   (Python IO proc too slow) and 1024 frames off: BlackHole never clears a slot the writer skipped. v2 zeroes the gap.
+8. (25.11.2026) The account's macOS runners queue; a job still queued after 15 min is cancelled. Rerun with
+   `gh run rerun <id> --failed` (artifacts survive). The release job runs on ubuntu-latest: it only needs gh.

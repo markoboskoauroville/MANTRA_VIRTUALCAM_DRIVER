@@ -67,7 +67,7 @@ ca.CA.AudioDeviceStart.argtypes = [C.c_uint32, C.c_void_p]
 ca.CA.AudioDeviceStop.argtypes = [C.c_uint32, C.c_void_p]
 ca.CA.AudioDeviceDestroyIOProcID.argtypes = [C.c_uint32, C.c_void_p]
 
-WRAP = 65536.0  # the ramp value v = (sampleTime mod 65536) / 65536 is exact in Float32
+WRAP = 16777216.0  # v = (sampleTime mod 2^24) / 2^24 is exact in Float32; old sound from a ring ago shows as an offset
 
 
 def loopback(mic, feed, seconds):

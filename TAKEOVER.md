@@ -62,7 +62,11 @@ Existential Audio's team id; kept so upstream changes can be merged).
    stores; no lock was added to the IO path.
 4. **Two upstream bug fixes**: `kAudioPlugInPropertyTranslateUIDToDevice` / `...ToBox` refused every correct qualifier
    (`== sizeof(CFStringRef)` instead of `!=`); the Device2 control list walked Device's object list.
-5. Box name default from kBox_Name instead of the literal "BlackHole Box". Info.plist: CFBundleVersion and
+5. **Skipped writes read as silence (v2).** Upstream BlackHole leaves a ring slot untouched when the writer misses a
+   cycle (an overload), so the mic would read sound from one ring earlier (65536 frames, 1.37 s at 48 kHz). WriteMix now
+   zeroes the frames between the last write and the new one (`gapFrames` in the status). Found by the runner loopback
+   of v1: one overload of the (slow, Python) test writer gave 1024 frames that did not match their sample time.
+6. Box name default from kBox_Name instead of the literal "BlackHole Box". Info.plist: CFBundleVersion and
    CFBundleShortVersionString = MANTRA_VERSION, the icon, an NSHumanReadableCopyright with the GPL/source notice.
 
 Not changed: the ring buffer (65536 frames), the zero time stamp model (period 16384 frames on the host clock), the
@@ -86,7 +90,7 @@ Read it from a normal thread at up to ~10 Hz (it allocates), never from an IO pr
 | lastWriteEndSampleTime, lastWriteHostTime, lastWriteFrames | the Feed's last WriteMix (end sample time, when, size) |
 | lastReadEndSampleTime, lastReadHostTime, lastReadFrames | the mic's last ReadInput |
 | fillFrames, fillMs | how far the writer is ahead of the reader (0 when either side is stopped) |
-| writeCycles, readCycles, silentReads, overloads | counters; silentReads = reads with no fresh Feed data (underrun or no writer) |
+| writeCycles, readCycles, silentReads, overloads, gapFrames | counters; silentReads = reads with no fresh Feed data (underrun or no writer); gapFrames = frames zeroed because the Feed writer skipped them |
 | nowHostTime | mach_absolute_time when the dictionary was made |
 
 Drift: the driver runs on the host clock, so there is nothing to correct on the driver side. The drift the app

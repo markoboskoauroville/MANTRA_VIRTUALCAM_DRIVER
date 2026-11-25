@@ -452,6 +452,7 @@ static volatile UInt64              gMantra_WriteCycles                 = 0;
 static volatile UInt64              gMantra_ReadCycles                  = 0;
 static volatile UInt64              gMantra_SilentReads                 = 0;   // reads with no fresh Feed data (underrun / no writer)
 static volatile UInt64              gMantra_Overloads                   = 0;   // WriteMix past its deadline
+static volatile UInt64              gMantra_GapFrames                   = 0;   // frames zeroed because the writer skipped them
 static volatile UInt32              gMantra_LastWriteFrames             = 0;
 static volatile UInt32              gMantra_LastReadFrames              = 0;
 
@@ -605,6 +606,7 @@ static CFPropertyListRef mantra_copy_status(void)
 	SInt64  rCycles         = (SInt64)gMantra_ReadCycles;
 	SInt64  silent          = (SInt64)gMantra_SilentReads;
 	SInt64  overloads       = (SInt64)gMantra_Overloads;
+	SInt64  gapFrames       = (SInt64)gMantra_GapFrames;
 	SInt32  wFrames         = (SInt32)gMantra_LastWriteFrames;
 	SInt32  rFrames         = (SInt32)gMantra_LastReadFrames;
 	Float64 fillFrames      = (gDevice_IOIsRunning && gDevice2_IOIsRunning) ? (wEnd - rEnd) : 0;  // Feed ahead of Mic
@@ -634,6 +636,7 @@ static CFPropertyListRef mantra_copy_status(void)
 	mantra_put_num(d, "readCycles",         kCFNumberSInt64Type,  &rCycles);
 	mantra_put_num(d, "silentReads",        kCFNumberSInt64Type,  &silent);
 	mantra_put_num(d, "overloads",          kCFNumberSInt64Type,  &overloads);
+	mantra_put_num(d, "gapFrames",          kCFNumberSInt64Type,  &gapFrames);
 	mantra_put_num(d, "fillFrames",         kCFNumberFloat64Type, &fillFrames);
 	mantra_put_num(d, "fillMs",             kCFNumberFloat64Type, &fillMs);
 	mantra_put_num(d, "nowHostTime",        kCFNumberSInt64Type,  &nowHost);
@@ -4822,6 +4825,21 @@ static OSStatus	BlackHole_DoIOOperation(AudioServerPlugInDriverRef inDriver, Aud
         }
         // TODO: Mix into the buffers but we will need to clear the buffers at some point.
         // Issue with outputting from mirrored device and main device at the same time. Not currently mixing. 
+        
+        // Mantra VirtualCam: if the writer skipped cycles (an overload, a late IO proc), the frames between
+        // the last write and this one still hold sound from one ring earlier (1.37 s at 48 kHz). Zero them,
+        // so the mic reads silence there, never old sound.
+        if (!isBufferClear && inIOCycleInfo->mOutputTime.mSampleTime > lastOutputSampleTime)
+        {
+            Float64 gap = inIOCycleInfo->mOutputTime.mSampleTime - lastOutputSampleTime;
+            UInt32 gapFrames = gap >= (Float64)kRing_Buffer_Frame_Size ? kRing_Buffer_Frame_Size : (UInt32)gap;
+            UInt32 gapStart = (UInt64)lastOutputSampleTime % kRing_Buffer_Frame_Size;
+            UInt32 gapFirst = kRing_Buffer_Frame_Size - gapStart;
+            if (gapFirst > gapFrames) { gapFirst = gapFrames; }
+            vDSP_vclr(gRingBuffer + gapStart * kNumber_Of_Channels, 1, gapFirst * kNumber_Of_Channels);
+            if (gapFrames > gapFirst) { vDSP_vclr(gRingBuffer, 1, (gapFrames - gapFirst) * kNumber_Of_Channels); }
+            gMantra_GapFrames += gapFrames;
+        }
         
         // Copy the buffers.
         memcpy(gRingBuffer + ringBufferFrameLocationStart * kNumber_Of_Channels, ioMainBuffer, firstPartFrameSize * kNumber_Of_Channels * sizeof(Float32));

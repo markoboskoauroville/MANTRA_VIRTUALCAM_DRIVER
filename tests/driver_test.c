@@ -242,6 +242,23 @@ int main(void)
         CFRelease(s);
         printf("  ok  fill = writer ahead (1024 frames = 21.333 ms); an underrun reads silence and is counted\n");
 
+        // the writer skips one block (an overload): that block must read as silence, not sound from a ring ago
+        {
+            Float64 g = S + 65536.0 * 2;        // exactly two rings later: the slot holds the loopback's old ramp
+            for (int i = 0; i < N * 2; i++) w[i] = 0.5f;
+            do_io(kObjectID_Device2, kObjectID_Stream_Output, kAudioServerPlugInIOOperationWriteMix, g, N, w);
+            // fill the ring with old sound at g+N..g+2N one ring earlier is already there from earlier writes? make sure:
+            do_io(kObjectID_Device2, kObjectID_Stream_Output, kAudioServerPlugInIOOperationWriteMix, g + 2 * N, N, w);  // skipped g+N
+            do_io(kObjectID_Device, kObjectID_Stream_Input, kAudioServerPlugInIOOperationReadInput, g + N, N, r);
+            for (int i = 0; i < N * 2; i++) CHECK(r[i] == 0.0f, "skipped block must be silence, read %g at %d", r[i], i);
+            do_io(kObjectID_Device, kObjectID_Stream_Input, kAudioServerPlugInIOOperationReadInput, g + 2 * N, N, r);
+            for (int i = 0; i < N * 2; i++) CHECK(r[i] == 0.5f, "block after the gap must be the new sound");
+            s = get_status(kObjectID_Device);
+            CHECK(dict_num(s, "gapFrames") >= N, "gapFrames %g", dict_num(s, "gapFrames"));
+            CFRelease(s);
+            printf("  ok  a block the writer skipped reads as silence (gap zeroed), never sound from a ring earlier\n");
+        }
+
         CHECK((*D)->StopIO(D, kObjectID_Device2, 2) == 0 && (*D)->StopIO(D, kObjectID_Device, 1) == 0, "StopIO");
         CHECK(gRingBuffer == NULL, "ring freed after the last client");
     }
